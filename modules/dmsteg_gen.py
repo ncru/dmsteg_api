@@ -19,6 +19,6 @@ def getfile(file):
     pdf_file = fitz.open(file)
 
     for page in pdf_file:
-        page.insert_image(rect, filename="datamatrix.png")
+        page.insert_image(rect, filename="gen/datamatrix.png")
 
     pdf_file.saveIncr()
