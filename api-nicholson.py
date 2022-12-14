@@ -2,7 +2,7 @@ import os
 import psycopg2
 from dotenv import load_dotenv
 from modules.threesys import *
-from flask import Flask, render_template, request, send_file
+from flask import Flask, render_template, request, send_file, url_for, flash, redirect
 from werkzeug.utils import secure_filename
 import json
 
@@ -12,9 +12,10 @@ INSERT_ORIGPDFS_RETURN_ID = (
 
 INSERT_THREESYSPDF_RETURN_ROW = "INSERT INTO threesyspdfs (pdf_metadata, pdf_data, origpdfs_id) VALUES (%s,%s, %s) RETURNING *;"
 
-SELECT_ROW_THREESYSPDF = "SELECT * FROM threesyspdfs WHERE origpdfs_id = %s;"
+SELECT_ROW_INSERT_THREESYSPDF = "SELECT * FROM threesyspdfs WHERE origpdfs_id = ;"
 
 load_dotenv()
+
 app = Flask(__name__)
 url = os.getenv("DATABASE_URL")
 connection = psycopg2.connect(url)
@@ -56,7 +57,7 @@ def check_files(req):
     return True
 
 
-def generate_dm_and_add_to_pdf(document):
+def generate_dmsteg_document(document):
     orig_pdf_data = bytes(document.tobytes())
     with connection:
         with connection.cursor() as cursor:
@@ -78,86 +79,77 @@ def generate_dm_and_add_to_pdf(document):
     with connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                INSERT_THREESYSPDF_RETURN_ROW, (metadata, new_pdf_data, steg_id)
+                INSERT_THREESYSPDF_RETURN_ROW,
+                (metadata, new_pdf_data, steg_id),
             )
-    rpdf_data_bytes = bytes(modified_document.tobytes())
+            (rpdf_id, rpdf_metadata, rpdf_data, rorigpdfs_id) = cursor.fetchall()[0]
+    # send_file(new_path, as_attachment=True)
+    rpdf_data_bytes = str(bytes(modified_document.tobytes()))
     modified_document.close()
     os.remove(new_path)
+    return {
+        "message": "Verified pdf successfully created",
+        "pdf_id": rorigpdfs_id,
+        "metadata": rpdf_metadata,
+        # "pdf_data": rpdf_data_bytes,
+    }, 201
 
-    with connection:
-        with connection.cursor() as cursor:
-            cursor.execute(SELECT_ROW_THREESYSPDF, (steg_id,))
-            (
-                rpdf_id,
-                rpdf_metadata,
-                rpdf_data,
-                rorigpdfs_id,
-            ) = cursor.fetchall()[0]
 
-    # from_db_filepath = "./uploads/threesys-generated.pdf"
-    # with open(from_db_filepath, "wb") as binary_file:
-    #     binary_file.write(rpdf_data_bytes)
-
-    return (
-        {
-            "message": "Verified pdf successfully created",
-            "pdf_id": rorigpdfs_id,
-            "metadata": rpdf_metadata,
-            "pdf_data": str(rpdf_data_bytes),
-        },
-        201,
-    )
+def check_doc_existing_dm_validity(document, images):
+    img_paths = initiate_images_and_get_paths(document, images)
+    dm_paths = grab_all_dms_from_images(img_paths)
+    if len(dm_paths) > 0:  #   meron dm images
+        valid_dm_path = check_dms_for_steganography(dm_paths)
+        if valid_dm_path != False:
+            return {
+                "message": "The document is already signed, use /verify to check if valid",
+            }, 300
+        else:
+            return {
+                "message": "The document is not signed by 3.sys",
+            }, 400
 
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    final_response = {}
-    images = []
-    file_path = ""
     if request.method == "POST":
         if not check_files(request):
             return {
                 "message": "Invalid inputs",
             }, 406
 
+        #   open file
         file = request.files["file"]
         file_path = os.path.join(
             app.config["UPLOAD_FOLDER"], secure_filename(file.filename)
         )
         file.save(file_path)
         document = fitz.open(file_path)
-        images = grab_first_page_images(document)
-        img_paths = initiate_images_and_get_paths(document, images)
-        dm_paths = grab_all_dms_from_images(img_paths)
-        if len(dm_paths) > 0:
-            valid_dm_path = check_dms_for_steganography(dm_paths)
-            if valid_dm_path != False:
-                final_response = {
-                    "message": "The document is already signed by 3.Sys, use /verify to check if valid",
-                }, 300
+
+        #   check margins if clear or not
+        if margins_passed(document):
+            #   if there are no [dm steg] images exisitng in pdf
+            #   proceed in dm steg generation
+            images = grab_first_page_images(document)
+            if images:
+                check_doc_existing_dm_validity(document, images)
+                generate_dmsteg_document(document)
             else:
-                final_response = generate_dm_and_add_to_pdf(document)
-        elif margins_passed(document):
-            final_response = generate_dm_and_add_to_pdf(document)
+                return generate_dmsteg_document(document)
+
         else:
-            final_response = {
+            images = grab_first_page_images(document)
+            if images:
+                check_doc_existing_dm_validity(document, images)
+            return {
                 "message": "The document must have clear 1 inch margins",
             }, 400
-
-        if images:
-            for i, image in enumerate(images):
-                image.close()
-                os.remove(img_paths[i])
         # document.close()
-        os.remove(file_path)
-        return final_response
+        # os.remove(file_path)
 
 
 @app.route("/verify", methods=["POST"])
 def verify():
-    final_response = {}
-    images = []
-    file_path = ""
     if request.method == "POST":
         if not check_files(request):
             return {
@@ -182,7 +174,7 @@ def verify():
                 metadata = document.metadata
                 with connection:
                     with connection.cursor() as cursor:
-                        cursor.execute(SELECT_ROW_THREESYSPDF, (steg_msg,))
+                        cursor.execute(SELECT_ROW_INSERT_THREESYSPDF, (steg_msg,))
                         (
                             rpdf_id,
                             rpdf_metadata,
@@ -191,30 +183,30 @@ def verify():
                         ) = cursor.fetchall()[0]
 
                 if metadata == rpdf_metadata:
-                    final_response = {
+                    return {
                         "message": "This document is signed and valid!",
                         "data-from-datamatrix": reg_msg,
                     }, 200
                 else:
-                    final_response = {
+                    return {
                         "message": "This is a falsified document",
                     }, 200
+            #   may images pero walang signature 3.sys
             else:
-                final_response = {
-                    "message": "The document is not signed by 3.Sys",
+                return {
+                    "message": "This document is not signed via 3.sys",
                 }, 406
+        # walang images and walang siganture 3.sys
         else:
-            final_response = {
-                "message": "This document has not been validated",
-            }, 300
+            return {
+                "message": "This document ",
+            }, 406
 
-        if images:
-            for i, image in enumerate(images):
-                image.close()
-                os.remove(img_paths[i])
-        document.close()
-        os.remove(file_path)
-        return final_response
+    for i, image in enumerate(images):
+        image.close()
+        os.remove(img_paths[i])
+    document.close()
+    os.remove(file_path)
 
 
 if __name__ == "__main__":
