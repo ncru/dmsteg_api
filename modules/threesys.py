@@ -2,12 +2,8 @@ import datetime
 import fitz
 import io
 from PIL import Image
-from pylibdmtx.pylibdmtx import decode
+import zxing
 import treepoem
-
-
-def create_fitz_file(bytes):
-    return fitz.open(bytes)
 
 
 def put_steg_dm_in_pdf(pdf_file, steg_dm):
@@ -25,17 +21,16 @@ def put_steg_dm_in_pdf(pdf_file, steg_dm):
     steg_dm.save(byteIO, format="PNG")
     img_bytes = byteIO.getvalue()
     first_page.insert_image(rect, stream=img_bytes)
-    # MOVE FINAL PDF TO DATABASE
-    # pdf_file.save("altered.pdf")
     return pdf_file
 
 
-def check_dms_for_steganography(dms):
+def check_dms_for_steganography(dm_paths):
     threesys_dms = []
-    for dm in dms:
-        read_result = read_steganography(dm)
+    for path in dm_paths:
+        _image = Image.open(path)
+        read_result = read_steganography(_image)
         if read_result != False:
-            threesys_dms.append(dm)
+            threesys_dms.append(path)
     if len(threesys_dms) == 1:
         return threesys_dms[0]
     return False
@@ -68,9 +63,7 @@ def generate_dm(pdf_file):
     )
 
 
-def steganography(image):
-    secret = "THIS SHOULD BE AN ID"
-
+def steganography(image, secret):
     chunk_size = 2
     # initialize necessary image components
     width, height = image.size
@@ -93,7 +86,6 @@ def steganography(image):
                 new_r = int(new_bin_r, 2)
                 image.putpixel((i, j), (new_r, g, b))
     # save metadata to database
-    image.save("steg_dm.png")
     return image
 
 
@@ -119,22 +111,23 @@ def read_steganography(image):
     return False
 
 
-def grab_all_dms(images):
+def grab_all_dms(paths):
     dms = []
-    for image in images:
-        if is_dm(image):
-            dms.append(image)
+    for path in paths:
+        if is_dm(path):
+            dms.append(path)
     return dms
 
 
-def is_dm(image):
-    result = read_dm(image)
+def is_dm(path):
+    result = read_dm(path)
     return True if len(result) > 0 else False
 
 
-def read_dm(image):
-    (decoded, rect) = decode(image)[0]
-    return decoded.decode("utf-8")
+def read_dm(path):
+    reader = zxing.BarCodeReader()
+    result = reader.decode(path)
+    return result.raw
 
 
 def msg_to_ascii(str):
