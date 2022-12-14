@@ -1,11 +1,22 @@
 import os
+import psycopg2
+from dotenv import load_dotenv
 from modules.threesys import *
 from flask import Flask, render_template, request, send_file, url_for, flash, redirect
 from werkzeug.utils import secure_filename
+import json
+import base64
+
+INSERT_PDF_RETURN_ROW = (
+    "INSERT INTO threesyspdfs (pdf_metadata, pdf_data) VALUES (%s, %s) RETURNING *;"
+)
+
+# load_dotenv()
 
 app = Flask(__name__)
-
-# app.config["UPLOAD_FOLDER"] = "buffer/"
+url = os.getenv("DATABASE_URL")
+connection = psycopg2.connect(url)
+app.config["UPLOAD_FOLDER"] = "uploads/"
 ALLOWED_EXTENSIONS = {"pdf"}
 
 
@@ -40,37 +51,59 @@ def main():
 def generate():
     if request.method == "POST":
         file = request.files["file"]
-        stream = file.stream
-        document = create_fitz_file(stream)
+        file.save(os.path.join(app.config["UPLOAD_FOLDER"], file.filename))
+        file_from_folder = f"uploads/{file.filename}"
+        document = create_fitz_file(file_from_folder)
 
-        return str(len(document))
+        metadata = json.dumps(document.metadata)
+        pdf_data = bytes(document.tobytes())
 
-        # images = grab_first_page_images(document)
-        # dms = grab_all_dms(images)
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute(INSERT_PDF_RETURN_ROW, (metadata, pdf_data))
+                (rpdf_id, rpdf_metadata, rpdf_data) = cursor.fetchall()[0]
 
-        # #  INSERT THERE MAY ONLY BE ONE 3SYS STEG
+        rpdf_data = bytes(rpdf_data)
+        with open(
+            os.path.join(app.config["UPLOAD_FOLDER"], f"temp-{rpdf_id}.pdf"), "wb"
+        ) as _f:
+            _f.write(rpdf_data)
 
-        # # if dms in the pdf check if they are 3sys
-        # if len(dms) > 0:
-        #     valid_dm = check_dms_for_steganography(dms)
-        #     if valid_dm != False:
-        #         reg_msg = read_dm(valid_dm)
-        #         steg_msg = read_steganography(valid_dm)
-        #         return "THE DOCUMENT IS ALREADY SIGNED", 400
-        #         # print("MESSAGE:", reg_msg)
-        #         # print("SECRET:", steg_msg)
-        #     else:
-        #         return "THE DOCUMENT MAY NOT BE VALID", 400
-        #         # print("THE DOCUMENT MAY NOT BE VALID")
-        # # if there are no dms then check if the margins are clear
-        # elif margins_passed(document):
-        #     ord_dm = generate_dm(document)
-        #     steg_dm = steganography(ord_dm)
-        #     # put dm in pdf
-        #     put_steg_dm_in_pdf(document, steg_dm)
-        #     return "DM STEG ADDED TO DOCUMENT", 200
-        # else:
-        #     return "THE DOCUMENT MUST HAVE CLEAR 1 INCH MARGINS", 400
+        # return {
+        #     "pdf_id": rpdf_id,
+        #     "message": "VERIFIED PDF SUCCESSFULLY CREATED",
+        #     "metadata": rpdf_metadata,
+        # }, 201
+
+        images = grab_first_page_images(document)
+        dms = grab_all_dms(images)
+
+        #  INSERT THERE MAY ONLY BE ONE 3SYS STEG
+
+        # if dms in the pdf check if they are 3sys
+        if len(dms) > 0:
+            valid_dm = check_dms_for_steganography(dms)
+            if valid_dm != False:
+                reg_msg = read_dm(valid_dm)
+                steg_msg = read_steganography(valid_dm)
+                return "THE DOCUMENT IS ALREADY SIGNED", 400
+                # print("MESSAGE:", reg_msg)
+                # print("SECRET:", steg_msg)
+            else:
+                return "THE DOCUMENT MAY NOT BE VALID", 400
+                # print("THE DOCUMENT MAY NOT BE VALID")
+        # if there are no dms then check if the margins are clear
+        elif margins_passed(document):
+            ord_dm = generate_dm(document)
+            steg_dm = steganography(ord_dm)
+            # put dm in pdf
+            modified_document = put_steg_dm_in_pdf(document, steg_dm)
+            base_name = os.path.basename(modified_document.name)
+            new_name = base_name[: base_name.find(".pdf")] + "-modified.pdf"
+            modified_document.save(os.path.join(app.config["UPLOAD_FOLDER"], new_name))
+            return "DM STEG ADDED TO DOCUMENT", 200
+        else:
+            return "THE DOCUMENT MUST HAVE CLEAR 1 INCH MARGINS", 400
 
     # if request.method == "POST":
     #     f = request.files["file"]
