@@ -41,9 +41,9 @@ def generate():
     if request.method == "POST":
         file = request.files["file"]
         stream = file.stream
-        # document = create_fitz_file(stream)
+        document = create_fitz_file(stream)
 
-        return str(file.headers)
+        return str(len(document))
 
         # images = grab_first_page_images(document)
         # dms = grab_all_dms(images)
