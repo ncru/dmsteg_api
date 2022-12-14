@@ -111,7 +111,7 @@ def read_steganography(image):
     return False
 
 
-def grab_all_dms(paths):
+def grab_all_dms_from_images(paths):
     dms = []
     for path in paths:
         if is_dm(path):
