@@ -2,7 +2,8 @@ import datetime
 import fitz
 import io
 from PIL import Image
-from pylibdmtx.pylibdmtx import decode
+
+# from pylibdmtx.pylibdmtx import decode
 import treepoem
 
 
