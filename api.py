@@ -2,7 +2,7 @@ import os
 import psycopg2
 from dotenv import load_dotenv
 from modules.threesys import *
-from flask import Flask, render_template, request, send_file
+from flask import Flask, render_template, request, send_file, jsonify
 from werkzeug.utils import secure_filename
 import json
 
@@ -19,7 +19,6 @@ app = Flask(__name__)
 url = os.getenv("DATABASE_URL")
 connection = psycopg2.connect(url)
 app.config["UPLOAD_FOLDER"] = "./uploads/"
-# app.config["SECRET_KEY"] = "a1b6da6f44ab0e075f90f2f503fdc24b"  # dont touch
 ALLOWED_EXTENSIONS = {"pdf"}
 
 
@@ -67,9 +66,7 @@ def generate_dm_and_add_to_pdf(document):
     steg_dm = steganography(ord_dm, str(steg_id))
     modified_document = put_steg_dm_in_pdf(document, steg_dm)
     base_name = os.path.basename(modified_document.name)
-    new_name = secure_filename(
-        f'temp-{base_name[: base_name.find(".pdf")]}-modified.pdf'
-    )
+    new_name = secure_filename(f'{base_name[: base_name.find(".pdf")]}-signed.pdf')
     new_path = os.path.join(app.config["UPLOAD_FOLDER"], new_name)
     modified_document.save(new_path)
     metadata = json.dumps(modified_document.metadata)
@@ -80,32 +77,21 @@ def generate_dm_and_add_to_pdf(document):
             cursor.execute(
                 INSERT_THREESYSPDF_RETURN_ROW, (metadata, new_pdf_data, steg_id)
             )
-    rpdf_data_bytes = bytes(modified_document.tobytes())
-    modified_document.close()
-    os.remove(new_path)
 
     with connection:
         with connection.cursor() as cursor:
             cursor.execute(SELECT_ROW_THREESYSPDF, (steg_id,))
-            (
-                rpdf_id,
-                rpdf_metadata,
-                rpdf_data,
-                rorigpdfs_id,
-            ) = cursor.fetchall()[0]
 
-    # from_db_filepath = "./uploads/threesys-generated.pdf"
-    # with open(from_db_filepath, "wb") as binary_file:
-    #     binary_file.write(rpdf_data_bytes)
-
-    return (
-        {
-            "message": "Verified pdf successfully created",
-            "pdf_id": rorigpdfs_id,
-            "metadata": rpdf_metadata,
-            "pdf_data": str(rpdf_data_bytes),
-        },
-        201,
+    return_data = io.BytesIO()
+    with open(new_path, "rb") as fo:
+        return_data.write(fo.read())
+    return_data.seek(0)
+    os.remove(new_path)
+    return send_file(
+        return_data,
+        mimetype="application/pdf",
+        download_name=new_name,
+        # as_attachment=True,
     )
 
 
@@ -116,9 +102,13 @@ def generate():
     file_path = ""
     if request.method == "POST":
         if not check_files(request):
-            return {
-                "message": "Invalid inputs",
-            }, 406
+            resp = jsonify(
+                {
+                    "message": "Invalid inputs",
+                }
+            )
+            resp.status_code = 406
+            return resp
 
         file = request.files["file"]
         file_path = os.path.join(
@@ -132,23 +122,28 @@ def generate():
         if len(dm_paths) > 0:
             valid_dm_path = check_dms_for_steganography(dm_paths)
             if valid_dm_path != False:
-                final_response = {
-                    "message": "The document is already signed by 3.Sys, use /verify to check if valid",
-                }, 300
+                final_response = jsonify(
+                    {
+                        "message": "The document is already signed by 3.Sys, use /verify to check if valid",
+                    }
+                )
+                final_response.status_code = 300
             else:
                 final_response = generate_dm_and_add_to_pdf(document)
         elif margins_passed(document):
             final_response = generate_dm_and_add_to_pdf(document)
         else:
-            final_response = {
-                "message": "The document must have clear 1 inch margins",
-            }, 400
-
+            final_response = jsonify(
+                {
+                    "message": "The document must have clear 1 inch margins",
+                }
+            )
+            final_response.status_code = 400
         if images:
             for i, image in enumerate(images):
                 image.close()
                 os.remove(img_paths[i])
-        # document.close()
+        document.close()
         os.remove(file_path)
         return final_response
 
@@ -191,23 +186,34 @@ def verify():
                         ) = cursor.fetchall()[0]
 
                 if metadata == rpdf_metadata:
-                    final_response = {
-                        "message": "This document is signed and valid!",
-                        "data-from-datamatrix": reg_msg,
-                    }, 200
+                    final_response = jsonify(
+                        {
+                            "message": "This document is signed and valid!",
+                            "data-from-datamatrix": reg_msg,
+                        }
+                    )
+                    final_response.status_code = 200
                 else:
-                    final_response = {
-                        "message": "This is a falsified document",
-                    }, 200
+                    final_response = jsonify(
+                        {
+                            "message": "This is a falsified document",
+                        }
+                    )
+                    final_response.status_code = 200
             else:
-                final_response = {
-                    "message": "The document is not signed by 3.Sys",
-                }, 406
+                final_response = jsonify(
+                    {
+                        "message": "The document is not signed by 3.Sys",
+                    }
+                )
+                final_response.status_code = 406
         else:
-            final_response = {
-                "message": "This document has not been validated",
-            }, 300
-
+            final_response = jsonify(
+                {
+                    "message": "This document has not been validated",
+                }
+            )
+            final_response.status_code = 300
         if images:
             for i, image in enumerate(images):
                 image.close()
